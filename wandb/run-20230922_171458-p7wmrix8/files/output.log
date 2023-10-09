@@ -1,0 +1,9 @@
+***** eval metrics *****
+  eval_accuracy           =     0.9091
+  eval_loss               =     0.2486
+  eval_runtime            = 0:02:25.61
+  eval_samples            =      40430
+  eval_samples_per_second =    277.651
+  eval_steps_per_second   =     34.708
+[INFO|modelcard.py:449] 2023-09-22 17:15:15,092 >> Dropping the following result as it does not have all the necessary fields:
+{'task': {'name': 'Text Classification', 'type': 'text-classification'}}
