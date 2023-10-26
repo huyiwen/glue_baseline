@@ -20,12 +20,18 @@ import math
 import os
 import random
 from pathlib import Path
+from datetime import datetime
 
 import datasets
 import torch
 from datasets import load_from_disk
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+import numpy as np
+from torch import nn
+import torch.nn.functional as F
+from pprint import pprint
+from time import sleep
 
 import evaluate
 import transformers
@@ -36,6 +42,7 @@ from huggingface_hub import Repository
 from prefetch_generator import BackgroundGenerator
 from transformers import (
     AutoConfig,
+    AutoModel,
     AutoModelForSequenceClassification,
     AutoTokenizer,
     BertTokenizer,
@@ -50,7 +57,8 @@ from transformers.utils import check_min_version, get_full_repo_name, send_examp
 from transformers.utils.versions import require_version
 
 from models.lstm import LSTMForSequenceClassification, LSTMConfig, LSTMTokenizer
-
+from models.modeling_mpo import MPOBertForSequenceClassification
+from models.linear_mpo import LinearDecomMPO, EmbeddingMPO, state_dict_matrix_to_mpo
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.24.0")
@@ -58,17 +66,28 @@ check_min_version("4.24.0")
 logger = get_logger(__name__)
 
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/text-classification/requirements.txt")
+TASK_NAME = {
+    "cola": "CoLA",
+    "mnli": "MNLI",
+    "mrpc": "MRPC",
+    "qnli": "QNLI",
+    "qqp": "QQP",
+    "rte": "RTE",
+    "sst2": "SST-2",
+    "stsb": "STS-B",
+    "wnli": "WNLI",
+}
 
 task_to_keys = {
-    "cola": ("sentence", None),
+    "cola": ("text", None),
     "mnli": ("premise", "hypothesis"),
-    "mrpc": ("sentence1", "sentence2"),
-    "qnli": ("question", "sentence"),
+    "mrpc": ("text1", "text2"),
+    "qnli": ("text1", "text2"),
     "qqp": ("text1", "text2"),
-    "rte": ("sentence1", "sentence2"),
+    "rte": ("text1", "text2"),
     "sst2": ("text", None),
-    "stsb": ("sentence1", "sentence2"),
-    "wnli": ("sentence1", "sentence2"),
+    "stsb": ("text1", "text2"),
+    "wnli": ("text1", "text2"),
 }
 
 
@@ -85,6 +104,12 @@ def parse_args():
         default=None,
         help="The name of the glue task to train on.",
         choices=list(task_to_keys.keys()),
+    )
+    parser.add_argument(
+        "--distil_temp", type=float, default=0., help="temp=0 no distillation, temp=1 use distillation."
+    )
+    parser.add_argument(
+        "--teacher_model", type=str, default=None, help="Teacher model used to generate logits."
     )
     parser.add_argument(
         "--train_file", type=str, default=None, help="A csv or a json file containing the training data."
@@ -142,7 +167,7 @@ def parse_args():
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
-    parser.add_argument("--num_train_epochs", type=int, default=3, help="Total number of training epochs to perform.")
+    parser.add_argument("--num_train_epochs", type=int, default=4, help="Total number of training epochs to perform.")
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -166,7 +191,7 @@ def parse_args():
         "--num_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler."
     )
     parser.add_argument("--output_dir", type=str, default=None, help="Where to store the final model.")
-    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
+    parser.add_argument("--seed", type=int, default=42, help="A seed for reproducible training.")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
     parser.add_argument(
         "--hub_model_id", type=str, help="The name of the repository to keep in sync with the local `output_dir`."
@@ -203,6 +228,66 @@ def parse_args():
         "--ignore_mismatched_sizes",
         action="store_true",
         help="Whether or not to enable to load a pretrained model whose head dimensions are different.",
+    )
+    parser.add_argument(
+        "--word_embed_input",
+        type=str,
+        default="30,7,10,15",
+    )
+    parser.add_argument(
+        "--word_embed_output",
+        type=str,
+        default="8,2,6,8",
+    )
+    parser.add_argument(
+        "--attention_input",
+        type=str,
+        default="8,2,6,8",
+    )
+    parser.add_argument(
+        "--attention_output",
+        type=str,
+        default="8,2,6,8",
+    )
+    parser.add_argument(
+        "--FFN1_input",
+        type=str,
+        default="8,2,6,8",
+    )
+    parser.add_argument(
+        "--FFN1_output",
+        type=str,
+        default="8,4,6,16",
+    )
+    parser.add_argument(
+        "--FFN2_input",
+        type=str,
+        default="8,4,6,16",
+    )
+    parser.add_argument(
+        "--FFN2_output",
+        type=str,
+        default="8,2,6,8",
+    )
+    parser.add_argument(
+        "--mpo_layers",
+        type=str,
+        default="FFN1,FFN2,attention,word_embed",
+    )
+    parser.add_argument(
+        "--mpo_lr_factor",
+        type=float,
+        default=0.2,
+    )
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        default="Adam",
+    )
+    parser.add_argument(
+        "--incorrect_fallback",
+        type=bool,
+        default="False",
     )
     args = parser.parse_args()
 
@@ -283,6 +368,7 @@ def main():
 
     # In distributed training, the load_dataset function guarantee that only one local process can concurrently
     # download the dataset.
+    print(args)
     if args.task_name is not None:
         # Downloading and loading a dataset from the hub.
         # raw_datasets = load_dataset("glue", args.task_name)
@@ -323,14 +409,94 @@ def main():
             label_list.sort()  # Let's sort it for determinism
             num_labels = len(label_list)
 
-    if isinstance(raw_datasets, datasets.DatasetDict) and "test" in raw_datasets:
-        raw_datasets.pop("test")
+    # if isinstance(raw_datasets, datasets.DatasetDict) and "test" in raw_datasets:
+    #     raw_datasets.pop("test")
+
+    if args.teacher_model is not None and args.distil_temp > 0:
+        teacher_config = AutoConfig.from_pretrained(args.teacher_model)
+        if args.task_name is not None:
+            teacher_metric = evaluate.load("./glue.py", args.task_name)
+        else:
+            teacher_metric = evaluate.load("./accuracy.py")
+
+        teacher_model = AutoModelForSequenceClassification.from_pretrained(args.teacher_model).cuda()
+
+        # print(teacher_model.classifier.weight)
 
     # Load pretrained model and tokenizer
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    if args.model_name_or_path == "lstm":
+    bert_model = None
+    if args.model_name_or_path == "new_bert":
+        bert_model = AutoModel.from_pretrained("/home/huyiwen/pretrained/bert-base-uncased")
+        tokenizer = BertTokenizer.from_pretrained("/home/huyiwen/pretrained/bert-base-uncased")
+        config = AutoConfig.from_pretrained("/home/huyiwen/pretrained/bert-base-uncased", num_labels=num_labels, finetuning_task=args.task_name)
+        config.num_hidden_layers = 3
+        model = BertForSequenceClassification(config).cuda()
+        model.bert.embeddings = bert_model.embeddings
+        # model.bert.encoder.layer = bert_model.encoder.layer
+        model.bert.encoder.layer[0] = bert_model.encoder.layer[0]
+        model.bert.encoder.layer[1] = bert_model.encoder.layer[5]
+        model.bert.encoder.layer[2] = bert_model.encoder.layer[11]
+        model.bert.pooler = bert_model.pooler
+        # t_model.classifier = bert_model.classifier
+
+
+    elif args.model_name_or_path.startswith("mpo:"):
+        mpo_input_shape = {
+            "word_embed": list(map(int, args.word_embed_input.split(","))),
+            "FFN1": list(map(int, args.FFN1_input.split(","))),
+            "FFN2": list(map(int, args.FFN2_input.split(","))),
+            "attention": list(map(int, args.attention_input.split(","))),
+        }
+        mpo_output_shape = {
+            "word_embed": list(map(int, args.word_embed_output.split(","))),
+            "FFN1": list(map(int, args.FFN1_output.split(","))),
+            "FFN2": list(map(int, args.FFN2_output.split(","))),
+            "attention": list(map(int, args.attention_output.split(","))),
+        }
+        truncate_num = {
+            "word_embed": 10000000000,
+            "FFN1": 10000000000,
+            "FFN2": 10000000000,
+            "attention": 10000000000,
+        }
+        mpo_model_name_or_path = args.model_name_or_path.split(":")[-1]
+        config = AutoConfig.from_pretrained(
+            mpo_model_name_or_path,
+            num_labels=num_labels,
+            finetuning_task=args.task_name,
+        )
+        bert_model = AutoModelForSequenceClassification.from_pretrained(mpo_model_name_or_path, config=config)
+        config.mpo_layers = args.mpo_layers.split(",")
+        config.mpo_input_shape = mpo_input_shape
+        config.mpo_output_shape = mpo_output_shape
+        config.truncate_num = truncate_num
+
+        model = MPOBertForSequenceClassification(config)
+        print(model)
+        print("#bert_p:", sum([p.numel() for p in bert_model.parameters()]))
+        mpo_state_dict, inflate_rate = state_dict_matrix_to_mpo(
+            dict(bert_model.state_dict()),
+            dict(model.named_parameters()),
+            {
+                768: mpo_input_shape["attention"],
+                3072: mpo_output_shape["FFN1"],
+                30522: mpo_input_shape["word_embed"]
+            },
+            return_inflate_rate=True,
+        )
+        if args.mpo_lr_factor == -1:
+            args.mpo_lr_factor = 1 / inflate_rate
+        print("inflate_rate =", inflate_rate, "mpo_lr_factor =", args.mpo_lr_factor)
+
+        model.load_state_dict(mpo_state_dict)
+
+        tokenizer = BertTokenizer.from_pretrained(mpo_model_name_or_path)
+
+
+    elif args.model_name_or_path == "lstm":
         config = LSTMConfig(num_labels=num_labels, finetuning_task=args.task_name, intermediate_size=300, activated_hidden_size=400)
         tokenizer = BertTokenizer.from_pretrained("/home/huyiwen/pretrained/bert")
         model = LSTMForSequenceClassification(config)
@@ -344,7 +510,8 @@ def main():
             config=config,
             ignore_mismatched_sizes=args.ignore_mismatched_sizes,
         )
-    print(model)
+    # print(model)
+    print("#params:", sum([p.numel() for p in model.parameters()]))
 
     # Preprocessing the datasets
     if args.task_name is not None:
@@ -377,10 +544,10 @@ def main():
             label_to_id = {i: label_name_to_id[label_list[i]] for i in range(num_labels)}
         else:
             logger.warning(
-                "Your model seems to have been trained with labels, but they don't match the dataset: ",
-                f"model labels: {list(sorted(label_name_to_id.keys()))}, dataset labels: {list(sorted(label_list))}."
+                "Your model seems to have been trained with labels, but they don't match the dataset: " +
+                f"model labels: {list(sorted(label_name_to_id.keys()))}, dataset labels: {list(sorted(label_list))}." +
                 "\nIgnoring the model labels as a result.",
-            )
+            )  # Comment: label_to_id will be ignored when loading bert-base-uncased or any finetuned bert.
     elif args.task_name is None and not is_regression:
         label_to_id = {v: i for i, v in enumerate(label_list)}
 
@@ -391,6 +558,7 @@ def main():
         model.config.label2id = {l: i for i, l in enumerate(label_list)}
         model.config.id2label = {id: label for label, id in config.label2id.items()}
 
+    # print(label_to_id)
     padding = "max_length" if args.pad_to_max_length else False
     truncation = eval(args.truncation) if args.truncation in ("True", "False") else args.truncation
 
@@ -421,7 +589,26 @@ def main():
         )
 
     train_dataset = processed_datasets["train"]
-    eval_dataset = processed_datasets["validation_matched" if args.task_name == "mnli" else "validation"]
+    if args.task_name == "mnli":
+        if "validation_matched" in processed_datasets and processed_datasets["validation_matched"][0]["labels"] != -1:
+            eval_dataset = processed_datasets["validation_matched"]
+            print(f"{args.task_name} Using validation_matched set for evaluation.")
+        else:
+            eval_dataset = processed_datasets["test_matched"]
+            print(f"{args.task_name} Using test_matched set for evaluation.")
+
+    elif "validation" in processed_datasets and processed_datasets["validation"][0]["labels"] != -1:
+        eval_dataset = processed_datasets["validation"]
+        print(f"{args.task_name} Using validation set for evaluation.")
+
+    elif "test" in processed_datasets and processed_datasets["test"][0]["labels"] != -1:
+        eval_dataset = processed_datasets["test"]
+        print(f"{args.task_name} Using test set for evaluation.")
+
+    else:
+        raise ValueError("No valid dataset found, please check your dataset.")
+    # eval_dataset = processed_datasets["validation" if args.task_name in {"rte"} else "test"]
+    # eval_dataset = processed_datasets["validation" if args.task_name != "sst2" else "test"]
 
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 3):
@@ -439,25 +626,43 @@ def main():
         data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=(8 if Accelerator.mixed_precision == 'fp16' else None))
 
     train_dataloader = DataLoaderX(
-        train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
+        train_dataset, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
     )
     eval_dataloader = DataLoaderX(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
 
+
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
-    no_decay = ["bias", "LayerNorm.weight"]
+    # no_decay = ["bias", "LayerNorm.weight"]
+    # optimizer_grouped_parameters = [
+    #     {
+    #         "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+    #         "weight_decay": args.weight_decay,
+    #     },
+    #     {
+    #         "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+    #         "weight_decay": 0.0,
+    #     },
+    # ]
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-            "weight_decay": args.weight_decay,
+            "params": [p for n, p in model.named_parameters() if "tensor_set" in n],
+            "lr": args.learning_rate * args.mpo_lr_factor,
         },
         {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
-            "weight_decay": 0.0,
-        },
+            "params": [p for n, p in model.named_parameters() if "tensor_set" not in n],
+            "lr": args.learning_rate,
+        }
     ]
-    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
+    # print("mpo lr:", args.learning_rate * args.mpo_lr_factor)
+    # " ".join(n for n, p in model.named_parameters() if "tensor_set" in n))
+    # print("usual lr:", args.learning_rate)
+    # " ".join(n for n, p in model.named_parameters() if "tensor_set" not in n))
+    # pprint({n: p for n, p in model.named_parameters() if "tensor_set" not in n})
+    # optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
     # optimizer = torch.optim.Adadelta(optimizer_grouped_parameters)
+    # optimizer = torch.optim.Adam(optimizer_grouped_parameters)
+    optimizer = getattr(torch.optim, args.optimizer)(optimizer_grouped_parameters)
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -472,6 +677,36 @@ def main():
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.max_train_steps,
     )
+
+    teacher_logits = None
+    if args.teacher_model is not None and args.distil_temp > 0:
+        teacher_model.train()
+        teacher_logits = []
+        all_labels = []
+        # print(teacher_model.classifier.weight)
+        for step, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader)):
+            batch = {k: v.to(teacher_model.device) for k, v in batch.items()}
+            logits = teacher_model(**batch).logits
+            teacher_logits.append(logits.detach())
+            all_labels.append(batch["labels"])
+            teacher_metric.add_batch(
+                predictions=logits.argmax(dim=-1),
+                references=batch['labels'],
+            )
+            # if step == 1:
+                # print(logits, batch["labels"])
+                # print(f"==> {args.teacher_model} outputs {logits.shape}, {logits} with labels {batch['labels']}")
+        # concatenate all logits into one tensor over all batches
+        teacher_logits = torch.cat(teacher_logits, dim=0)
+        if args.incorrect_fallback:
+            all_labels = torch.cat(all_labels, dim=0)
+            num_classes = teacher_logits.shape[-1]
+            correct = (teacher_logits.argmax(dim=-1) == all_labels)[:, None].repeat(1, num_classes)
+            onehot_labels = F.one_hot(all_labels, num_classes=num_classes)
+            teacher_logits = torch.where(correct, teacher_logits, onehot_labels)
+
+        print(f"Teacher acc = {teacher_metric.compute()}")
+
 
     # Prepare everything with our `accelerator`.
     model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
@@ -540,6 +775,72 @@ def main():
             starting_epoch = resume_step // len(train_dataloader)
             resume_step -= starting_epoch * len(train_dataloader)
 
+
+    def loss_fct(progress_bar, outputs, step_idx, labels, distil_loss_fct=nn.KLDivLoss(reduction='batchmean')):
+
+        if args.distil_temp == 0 or teacher_logits is None:
+            return outputs.loss
+
+        T = args.distil_temp
+        st = step_idx * args.per_device_train_batch_size
+        ed = st + args.per_device_train_batch_size
+
+        # print(labels[0:5])
+        print(outputs.logits[0:5].T)
+        # print(F.log_softmax(outputs.logits[0:5], dim=-1).T)
+        # print(F.softmax(outputs.logits[0:5], dim=-1).T)
+        print(teacher_logits[st:st+5].T)
+        # print(F.softmax(teacher_logits[st:st+5], dim=-1).T)
+
+        # use log_softmax and softmax respectively: https://pytorch.org/docs/stable/generated/torch.nn.KLDivLoss.html
+        log_softmax_student_logits = F.log_softmax(outputs.logits, dim=-1)
+        softmax_teacher_logits = F.softmax(teacher_logits[st:ed], dim=-1)
+
+        distil_loss = distil_loss_fct(log_softmax_student_logits, softmax_teacher_logits)
+        base_loss = outputs.loss
+        progress_bar.set_description(f"b{base_loss:e},d{distil_loss:e}")
+
+        return T * distil_loss + (1 - T) * base_loss
+
+
+    if args.task_name == "stsb":  # this is an regression task, which cannot use distillation
+        loss_fct = lambda p, o, i, l: o.loss
+
+    # epoch=-1 evaluation
+    model.eval()
+    if bert_model is not None:
+        bert_model.cuda().eval()
+        MPO_DIFF = 0
+    samples_seen = 0
+    for step, batch in enumerate(eval_dataloader):
+        with torch.no_grad():
+            outputs = model(**batch)
+            if bert_model is not None:
+                bert_outputs = bert_model(**batch)
+                MPO_DIFF += torch.sum((outputs.logits - bert_outputs.logits) ** 2).item()
+                # print(outputs.logits[0:10].T, bert_outputs.logits[0:10].T)
+        predictions = outputs.logits.argmax(dim=-1)
+        predictions, references = accelerator.gather((predictions, batch["labels"]))
+        # If we are in a multiprocess environment, the last batch has duplicates
+        if accelerator.num_processes > 1:
+            if step == len(eval_dataloader) - 1:
+                predictions = predictions[: len(eval_dataloader.dataset) - samples_seen]
+                references = references[: len(eval_dataloader.dataset) - samples_seen]
+            else:
+                samples_seen += references.shape[0]
+        metric.add_batch(
+            predictions=predictions,
+            references=references,
+        )
+    if bert_model is not None:
+        del bert_model
+
+    print("MPO DIFFERENCES =", MPO_DIFF)
+    eval_metric = metric.compute()
+    logger.info(f"epoch -1: {eval_metric} {outputs.logits} {batch['labels']}")
+
+
+    print("start training", args.task_name)
     flag = False
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
@@ -562,7 +863,9 @@ def main():
                 print(tokenizer.decode(batch["input_ids"][0]))
                 flag = True
             outputs = model(**batch)
-            loss = outputs.loss
+            # if epoch == 0 and step == 0:
+            #     print("logits:", outputs.logits, "\nloss:", outputs.loss)
+            loss = loss_fct(progress_bar, outputs, step, batch["labels"])
             # We keep track of the loss at each epoch
             if args.with_tracking:
                 total_loss += loss.detach().float()
@@ -654,7 +957,7 @@ def main():
     if args.task_name == "mnli":
         # Final evaluation on mismatched validation set
         eval_dataset = processed_datasets["validation_mismatched"]
-        eval_dataloader = DataLoader(
+        eval_dataloader = DataLoaderX(
             eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
         )
         eval_dataloader = accelerator.prepare(eval_dataloader)
@@ -673,7 +976,9 @@ def main():
 
     if args.output_dir is not None:
         with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
-            json.dump({"eval_accuracy": eval_metric["accuracy"]}, f)
+            eval_metric['time'] = str(datetime.now())
+            eval_metric['task'] = args.task_name
+            json.dump(eval_metric, f)
 
 
 if __name__ == "__main__":
