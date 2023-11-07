@@ -121,14 +121,55 @@
 # 10.25 test mpo5
 
 function mpo_run_glue_no_trainer() {
-    CUDA_VISIBLE_DEVICES=3 python run_glue_no_trainer.py --model_name_or_path mpo:/home/huyiwen/pretrained/bert-base-uncased --task_name $1 --max_length $9 --per_device_train_batch_size $8 --num_train_epochs 4 --learning_rate $7 --output_dir /home/huyiwen/tmp/$6/$1/ --mpo_lr_factor -1 --optimizer Adam --distil_temp 0 --teacher_model /home/huyiwen/pretrained/bert-base-uncased-$2 --word_embed_input $3 --word_embed_output $4 --attention_input $4 --attention_output $4 --FFN1_input $4 --FFN1_output $5 --FFN2_input $5 --FFN2_output $4 --incorrect_fallback True --mpo_layers "word_embed"
+
+    model_name_or_path=mpo:/home/huyiwen/pretrained/bert-base-uncased
+    task_name=$1
+    max_length=$9
+    per_device_train_batch_size=$8
+    num_train_epochs=4
+    learning_rate=$7
+    output_dir=/home/huyiwen/tmp/$6/$1/
+    mpo_lr_factor=-1
+    optimizer=Adam
+    distil_temp=0
+    teacher_model=/home/huyiwen/pretrained/bert-base-uncased-$2
+    word_embed_input=$3
+    word_embed_output=$4
+    attention_input=$4
+    attention_output=$4
+    FFN1_input=$4
+    FFN1_output=$5
+    FFN2_input=$5
+    FFN2_output=$4
+    incorrect_fallback=True
+    # mpo_layers=FFN1,FFN2,attention,word_embed
+    mpo_layers=word_embed
+    cuda=${10}
+
+    if [ -z $cuda ]
+    then
+        set -x
+        CUDA_VISIBLE_DEVICES=8 python run_glue_no_trainer.py --model_name_or_path $model_name_or_path --task_name $task_name --max_length $max_length --per_device_train_batch_size $per_device_train_batch_size --num_train_epochs $num_train_epochs --learning_rate $learning_rate --output_dir $output_dir --mpo_lr_factor $mpo_lr_factor --optimizer $optimizer --distil_temp $distil_temp --teacher_model $teacher_model --word_embed_input $word_embed_input --word_embed_output $word_embed_output --attention_input $attention_input --attention_output $attention_output --FFN1_input $FFN1_input --FFN1_output $FFN1_output --FFN2_input $FFN2_input --FFN2_output $FFN2_output --incorrect_fallback $incorrect_fallback --mpo_layers $mpo_layers
+    else
+        set -x
+        CUDA_VISIBLE_DEVICES=${10} nohup python $run_glue_no_trainer.py --model_name_or_path $model_name_or_path --task_name $task_name --max_length $max_length --per_device_train_batch_size $per_device_train_batch_size --num_train_epochs $num_train_epochs --learning_rate $learning_rate --output_dir $output_dir --mpo_lr_factor $mpo_lr_factor --optimizer $optimizer --distil_temp $distil_temp --teacher_model $teacher_model --word_embed_input $word_embed_input --word_embed_output $word_embed_output --attention_input $attention_input --attention_output $attention_output --FFN1_input $FFN1_input --FFN1_output $FFN1_output --FFN2_input $FFN2_input --FFN2_output $FFN2_output --incorrect_fallback $incorrect_fallback --mpo_layers $mpo_layers > bkg_log/$1.log &
+    fi
+
 }
 
 function run_glue_no_trainer() {
-    # mpo_run_glue_no_trainer $1 $2 "30,7,1,1,1,10,15" "8,2,1,1,1,6,8" "8,4,1,1,1,6,16" "ft_distil_mpo7" $4 $4 $5
-    # mpo_run_glue_no_trainer $1 $2 "210,1,150" "32,1,24" "48,1,64" "ft_distil_mpo2" $4 $4 $5
+    # if $6 is null, set to 5
+    if [ -z $6 ]
+    then
+        cuda=""
+    else
+        cuda=$6
+    fi
+
+    # mpo_run_glue_no_trainer $1 $2 "30,7,1,1,1,10,15" "8,2,1,1,1,6,8" "8,4,1,1,1,6,16" "ft_distil_mpo7" $3 $4 $5
+    mpo_run_glue_no_trainer $1 $2 "210,1,1,1,150" "32,1,1,1,24" "48,1,1,1,64" "ft_distil_mpo_new" $3 $4 $5 $cuda
     # mpo_run_glue_no_trainer $1 $2 "0" "0" "0" "ft_distil" $3 $4 $5
-    mpo_run_glue_no_trainer $1 $2 "30,7,10,15" "8,2,6,8" "8,4,6,16" "ft_distil_mpo4" $3 $4 $5
+    # mpo_run_glue_no_trainer $1 $2 "30,7,10,15" "8,2,6,8" "8,4,6,16" "ft_distil_mpo4" $3 $4 $5
 }
 
 run_glue_no_trainer sst2 SST-2 5e-5 64 128
@@ -142,3 +183,10 @@ run_glue_no_trainer sst2 SST-2 5e-5 64 128
 # run_glue_no_trainer mnli MNLI 3e-5 32 512
 
 # big dataset: QQP MNLI
+
+
+# bkg test: 11.7
+# run_glue_no_trainer sst2 SST-2 5e-5 64 128 0
+# run_glue_no_trainer cola CoLA 3e-5 32 256 1
+# run_glue_no_trainer qnli QNLI 3e-5 32 256 3
+# run_glue_no_trainer rte RTE 3e-5 32 256 4

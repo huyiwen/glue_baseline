@@ -473,6 +473,8 @@ def main():
         config.mpo_input_shape = mpo_input_shape
         config.mpo_output_shape = mpo_output_shape
         config.truncate_num = truncate_num
+        config.mpo_initialize = False
+        # print("==> DEBUG: bert_model", bert_model)
 
         model = MPOBertForSequenceClassification(config)
         print(model)
@@ -654,7 +656,7 @@ def main():
             "lr": args.learning_rate,
         }
     ]
-    # print("mpo lr:", args.learning_rate * args.mpo_lr_factor)
+    print("mpo lr:", args.learning_rate * args.mpo_lr_factor)
     # " ".join(n for n, p in model.named_parameters() if "tensor_set" in n))
     # print("usual lr:", args.learning_rate)
     # " ".join(n for n, p in model.named_parameters() if "tensor_set" not in n))
@@ -834,14 +836,15 @@ def main():
         )
     if bert_model is not None:
         del bert_model
+        print("MPO DIFFERENCES =", MPO_DIFF)
 
-    print("MPO DIFFERENCES =", MPO_DIFF)
     eval_metric = metric.compute()
     logger.info(f"epoch -1: {eval_metric} {outputs.logits} {batch['labels']}")
 
 
     print("start training", args.task_name)
     flag = False
+    last_par = None
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
         if args.with_tracking:
@@ -877,6 +880,16 @@ def main():
                 optimizer.zero_grad()
                 progress_bar.update(1)
                 completed_steps += 1
+                # if last_par is not None:
+                #     diffs = tuple(
+                #         ((i - j) ** 2).sum().item()
+                #         for i, j in zip(model.bert.embeddings.word_embeddings.tensor_set, last_par[:-1])
+                #     )
+                #     difft = ((model.bert.embeddings.word_embeddings.weight - last_par[-1]) ** 2).sum().item()
+
+                #     print(str(diffs) + f" difft={difft}")
+
+                # last_par = tuple(i.clone() for i in model.bert.embeddings.word_embeddings.tensor_set) + (model.bert.embeddings.word_embeddings.weight.clone(),)
 
             if isinstance(checkpointing_steps, int):
                 if completed_steps % checkpointing_steps == 0:

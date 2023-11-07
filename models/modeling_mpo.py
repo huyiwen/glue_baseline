@@ -199,7 +199,7 @@ class MPOBertEmbeddings(BertEmbeddings):
     def __init__(self, config):
         super().__init__(config)
         if 'word_embed' in config.mpo_layers:
-            self.word_embeddings = EmbeddingMPO(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id, mpo_input_shape=config.mpo_input_shape['word_embed'], mpo_output_shape=config.mpo_output_shape['word_embed'], truncate_num=config.truncate_num['word_embed'])
+            self.word_embeddings = EmbeddingMPO(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id, mpo_input_shape=config.mpo_input_shape['word_embed'], mpo_output_shape=config.mpo_output_shape['word_embed'], truncate_num=config.truncate_num['word_embed'], mpo_initialize=config.mpo_initialize)
 
 
 class MPOBertSelfAttention(BertSelfAttention):
@@ -207,16 +207,16 @@ class MPOBertSelfAttention(BertSelfAttention):
         super().__init__(config, position_embedding_type=position_embedding_type)
         if 'attention' in config.mpo_layers:
             kwargs = {'mpo_input_shape': config.mpo_input_shape['attention'], 'mpo_output_shape': config.mpo_output_shape['attention'], 'truncate_num': config.truncate_num['attention']}
-            self.query = LinearDecomMPO(config.hidden_size, self.all_head_size, **kwargs)
-            self.key = LinearDecomMPO(config.hidden_size, self.all_head_size, **kwargs)
-            self.value = LinearDecomMPO(config.hidden_size, self.all_head_size, **kwargs)
+            self.query = LinearDecomMPO(config.hidden_size, self.all_head_size, mpo_initialize=config.mpo_initialize, **kwargs)
+            self.key = LinearDecomMPO(config.hidden_size, self.all_head_size, mpo_initialize=config.mpo_initialize, **kwargs)
+            self.value = LinearDecomMPO(config.hidden_size, self.all_head_size, mpo_initialize=config.mpo_initialize, **kwargs)
 
 
 class MPOBertSelfOutput(BertSelfOutput):
     def __init__(self, config):
         super().__init__(config)
         if 'attention' in config.mpo_layers:
-            self.dense = LinearDecomMPO(config.hidden_size, config.hidden_size, mpo_input_shape=config.mpo_input_shape['attention'], mpo_output_shape=config.mpo_output_shape['attention'], truncate_num=config.truncate_num['attention'])
+            self.dense = LinearDecomMPO(config.hidden_size, config.hidden_size, mpo_input_shape=config.mpo_input_shape['attention'], mpo_output_shape=config.mpo_output_shape['attention'], truncate_num=config.truncate_num['attention'], mpo_initialize=config.mpo_initialize)
         else:
             self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
@@ -234,14 +234,14 @@ class MPOBertIntermediate(BertIntermediate):
     def __init__(self, config):
         super().__init__(config)
         if 'FFN1' in config.mpo_layers:
-            self.dense = LinearDecomMPO(config.hidden_size, config.intermediate_size, mpo_input_shape=config.mpo_input_shape['FFN1'], mpo_output_shape=config.mpo_output_shape['FFN1'], truncate_num=config.truncate_num['FFN1'])
+            self.dense = LinearDecomMPO(config.hidden_size, config.intermediate_size, mpo_input_shape=config.mpo_input_shape['FFN1'], mpo_output_shape=config.mpo_output_shape['FFN1'], truncate_num=config.truncate_num['FFN1'], mpo_initialize=config.mpo_initialize)
 
 
 class MPOBertOutput(BertOutput):
     def __init__(self, config):
         super().__init__(config)
         if 'FFN2' in config.mpo_layers:
-            self.dense = LinearDecomMPO(config.intermediate_size, config.hidden_size, mpo_input_shape=config.mpo_input_shape['FFN2'], mpo_output_shape=config.mpo_output_shape['FFN2'], truncate_num=config.truncate_num['FFN2'])
+            self.dense = LinearDecomMPO(config.intermediate_size, config.hidden_size, mpo_input_shape=config.mpo_input_shape['FFN2'], mpo_output_shape=config.mpo_output_shape['FFN2'], truncate_num=config.truncate_num['FFN2'], mpo_initialize=config.mpo_initialize)
 
 
 class MPOBertLayer(BertLayer):

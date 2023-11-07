@@ -29,16 +29,16 @@
 # 10.23
 
 function mpo_run_glue_no_trainer() {
-    CUDA_VISIBLE_DEVICES=6 python run_glue_no_trainer.py --model_name_or_path /home/huyiwen/pretrained/bert-base-uncased --task_name $1 --max_length $9 --per_device_train_batch_size $8 --num_train_epochs 4 --learning_rate $7 --output_dir /home/huyiwen/tmp/$6/$1/ --mpo_lr_factor 0.5 --optimizer Adam --distil_temp 1 --teacher_model /home/huyiwen/pretrained/bert-base-uncased-$2 --word_embed_input $3 --word_embed_output $4 --attention_input $4 --attention_output $4 --FFN1_input $4 --FFN1_output $5 --FFN2_input $5 --FFN2_output $4 --incorrect_fallback True --mpo_layers "FFN1,FFN2,attention"
+    CUDA_VISIBLE_DEVICES=5 python run_glue_no_trainer.py --model_name_or_path /home/huyiwen/pretrained/bert-base-uncased --task_name $1 --max_length $9 --per_device_train_batch_size $8 --num_train_epochs 4 --learning_rate $7 --output_dir /home/huyiwen/tmp/$6/$1/ --mpo_lr_factor 0.5 --optimizer Adam --distil_temp 1 --teacher_model /home/huyiwen/pretrained/bert-base-uncased-$2 --word_embed_input $3 --word_embed_output $4 --attention_input $4 --attention_output $4 --FFN1_input $4 --FFN1_output $5 --FFN2_input $5 --FFN2_output $4 --incorrect_fallback True --mpo_layers "FFN1,FFN2,attention"
 }
 
 function run_glue_no_trainer() {
     # mpo_run_glue_no_trainer $1 $2 "30,7,1,10,15" "8,2,1,6,8" "8,4,1,6,16" "ft_distil_mpo5" $4 $4 $5
-    mpo_run_glue_no_trainer $1 $2 "0" "0" "0" "ft_distil" $3 $4 $5
-    # mpo_run_glue_no_trainer $1 $2 "30,7,10,15" "8,2,6,8" "8,4,6,16" "ft_distil_mpo4" $3 $4 $5
+    # mpo_run_glue_no_trainer $1 $2 "0" "0" "0" "ft_distil" $3 $4 $5
+    mpo_run_glue_no_trainer $1 $2 "30,7,10,15" "8,2,6,8" "8,4,6,16" "ft_distil_mpo4" $3 $4 $5
 }
 
-# run_glue_no_trainer sst2 SST-2 5e-5 64 128
+run_glue_no_trainer sst2 SST-2 5e-5 64 128
 # run_glue_no_trainer cola CoLA 3e-5 32 256
 # run_glue_no_trainer mrpc MRPC 5e-5 32 256
 # run_glue_no_trainer qqp QQP 3e-5 32 256
@@ -46,6 +46,6 @@ function run_glue_no_trainer() {
 # run_glue_no_trainer qnli QNLI 3e-5 32 256
 # run_glue_no_trainer rte RTE 3e-5 32 256
 # run_glue_no_trainer wnli WNLI 3e-5 32 256
-run_glue_no_trainer mnli MNLI 3e-5 32 512
+# run_glue_no_trainer mnli MNLI 3e-5 32 512
 
 # big dataset: QQP MNLI

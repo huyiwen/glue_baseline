@@ -4,3 +4,4 @@ nohup.out
 .vscode
 logs
 wandb
+bkg_log/
